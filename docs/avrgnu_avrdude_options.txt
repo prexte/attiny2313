@@ -1,0 +1,103 @@
+Microchip Studio
+
+AVR/GNU Common:
+General: 
+-mmcu=attiny2313 -B "E:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATtiny_DFP\1.10.348\gcc\dev\attiny2313"
+
+
+AVR/GNU C Compiler:
+Command: avr-gcc 
+
+All Options: -x c -funsigned-char -funsigned-bitfields -DNDEBUG  -I"E:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATtiny_DFP\1.10.348\include"  -Os -ffunction-sections -fdata-sections -fpack-struct -fshort-enums -Wall -mmcu=attiny2313 -B "E:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATtiny_DFP\1.10.348\gcc\dev\attiny2313" -c -std=gnu99 -MD -MP -MF "$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -MT"$(@:%.o=%.o)" 
+
+General:
+Default char type is unsigned: -funsigned-char 
+Default bitfield tyoe is unsigned: -funsigned-bitfields
+
+Symbols:
+-DNDEBUG
+
+Directories:
+Include Paths: -I"E:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATtiny_DFP\1.10.348\include"
+
+Optimization:
+Optimize for size: -Os
+
+Prepare functions for garbage collection: -ffunction-sections
+Prepare data for garbage collection: -fdata-sections-Wl,--gc-sections
+Pack Structure members together: -fpack-struct
+Allocate only as many bytes needed by enum types: -fshort-enums
+
+Debugging:
+
+Warnings:
+All warnings: -Wall
+
+Miscellaneous:
+-std=gnu99
+
+
+
+AVR/GNU Linker:
+Command: avr-gcc
+
+All Options: -Wl,-Map="$(OutputFileName).map" -Wl,--start-group -Wl,-lm  -Wl,--end-group -Wl,--gc-sections -mmcu=attiny2313 -B "E:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATtiny_DFP\1.10.348\gcc\dev\attiny2313" 
+
+General:
+Generate Map: -Wl,-Map="$(OutputFileName).map"
+
+Libraries: 
+libm: -Wl,-lm
+
+Optimization:
+Garbage collect unused sections: -Wl,--gc-sections
+
+Memory Settings:
+
+Miscellaneous:
+
+
+AVR/GNU Assembler:
+Command: avr-gcc
+
+All Options: -Wa,-gdwarf2 -x assembler-with-cpp -c -mmcu=attiny2313 -B "E:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATtiny_DFP\1.10.348\gcc\dev\attiny2313" -I "E:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATtiny_DFP\1.10.348\include"  -MD -MP -MF "$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -MT"$(@:%.o=%.o)" 
+
+General:
+Include Path: -I "E:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATtiny_DFP\1.10.348\include"
+
+Debugging:
+
+
+AVR/GNU Archiver:
+Command avr-ar
+
+All Options: -r
+
+General: -r
+
+------------------------------------------------------------------
+
+External Tools:
+
+
+Commands to read and write/flash MC with avrdude and USBASP
+
+Title: USBASP 2313 read ->f:\flash.hex
+Command: ...avrdude.exe
+Arguments: -c usbasp -p t2313 -U flash:r:f:\flash.hex:i -B4
+
+
+Title: USBASP 2313 write project
+Command: ...avrdude.exe
+Arguments: -c usbasp -p t2313 -U flash:w:$(ProjectDir)Release\$(TargetName).hex:i -B4
+
+
+Title: USBASP 2313 read EEPROM -> f:\eeprom.hex
+Command: ...avrdude.exe
+Arguments: -c usbasp -p t2313 -U eeprom:r:f:\eeprom.hex:i -B4
+
+
+
+
+
+
