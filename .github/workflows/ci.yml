@@ -10,7 +10,7 @@ jobs:
         build:
                 runs-on: ubuntu-latest
                 container:
-                        image: prexte/test:latest
+                        image: prexte/avr-gcc:latest
                 steps:
                         - name: Checkout the repository
                           uses: actions/checkout@v4
