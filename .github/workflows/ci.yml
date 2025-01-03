@@ -3,11 +3,12 @@ on:
         push:
                 branches:
                         - main
+                        - build_makefile  
 permissions:
         contents: read        
 
 jobs:
-        build:
+        build_and_check:
                 runs-on: ubuntu-latest
                 container:
                         image: prexte/avr-gcc:latest
