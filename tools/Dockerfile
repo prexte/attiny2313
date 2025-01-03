@@ -17,7 +17,11 @@ RUN DEBIAN_FRONTEND=noninteractive \
 # GitHub actions needs permissions to create tmp files.
 #RUN useradd -rm -d /home/ubuntu -s /bin/bash -g root -G sudo \
 #	-u 1001 ubuntu
-USER ubuntu
-WORKDIR /home/ubuntu
+#USER ubuntu
+#WORKDIR /home/ubuntu
+RUN useradd -rm -d /home/avr_dev -s /bin/bash -g root -G sudo \
+	-u 1001 avr_dev
+USER avr_dev
+WORKDIR /home/avr_dev
 
 	
