@@ -16,4 +16,8 @@ jobs:
                         - name: Checkout the repository
                           uses: actions/checkout@v4
                         - run: make  
+                        - name: Store Artifacts
+                          uses: action/upload-artifact@v2
+                          with: 
+                                  path: ./bin/*.hex
 
