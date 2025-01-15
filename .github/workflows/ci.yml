@@ -22,17 +22,17 @@ jobs:
                           uses: actions/upload-artifact@v4
                           with: 
                                   path: ./build/bin/*.hex
-        upload_firmware:
-                name: Upload Firmware
-                needs: build_and_check
-                runs-on: self-hosted
-                steps:
-                        - name: Download Artifacts
-                          uses: actions/download-artifact@v4
-                          with:
-                                  name: h_bridge.hex
-                        - name: List Downloaded File
-                        - run: dir
+#        upload_firmware:
+#                name: Upload Firmware
+#                needs: build_and_check
+#                runs-on: self-hosted
+#                steps:
+#                        - name: Download Artifacts
+#                          uses: actions/download-artifact@v4
+#                          with:
+#                                  name: h_bridge.hex
+#                        - name: List Downloaded File
+#                        - run: dir
                                   
                 
                                   
