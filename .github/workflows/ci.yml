@@ -4,6 +4,7 @@ on:
                 branches:
                         - main
                         - build_makefile  
+                        - prexte-patch-1
 permissions:
         contents: read        
 
@@ -16,4 +17,7 @@ jobs:
                         - name: Checkout the repository
                           uses: actions/checkout@v4
                         - run: make  
-
+                        - name: Store Artifacts
+                          uses: action/upload-artifact@v2
+                          with: 
+                                  path: ./bin/*.hex
