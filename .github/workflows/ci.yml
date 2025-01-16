@@ -30,7 +30,7 @@ jobs:
                         - name: Download Artifacts
                           uses: actions/download-artifact@v4
                         - name: List Downloaded File
-                          run: dir \/s \/b
+                          run: Get-ChildItem -Recurse
                         - name: AVRDude upload Firmware
                           run: "F:\avrdude\avrdude.exe -c usbasp -p t2313 -U flash:w:./artifact/h_bridge.hex:i -B4"
                           
