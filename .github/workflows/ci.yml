@@ -10,7 +10,7 @@ permissions:
 
 jobs:
         build_and_check:
-                name: Build and Check
+                name: build_and_check
                 runs-on: ubuntu-latest
                 container:
                         image: prexte/avr-gcc:latest
@@ -23,7 +23,7 @@ jobs:
                           with: 
                                   path: ./build/bin/*.hex
         upload_firmware:
-                name: Upload Firmware
+                name: upload_firmware
                 needs: build_and_check
                 runs-on: self-hosted
                 steps:
