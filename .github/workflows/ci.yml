@@ -30,7 +30,7 @@ jobs:
                         - name: Download Artifacts
                           uses: actions/download-artifact@v4
                         - name: List Downloaded File
-                        - run: dir
+                          run: dir
                                   
                 
                                   
