@@ -15,6 +15,8 @@
 #include <util/delay.h>
 #include <avr/interrupt.h>
 
+#include "twi_over_usi.h"
+
 #define CLOCKWISE_DIRECTION_HALF_STEPS
 #define COUNTERCLOCKWISE_DIRECTION_HALF_STEPS
 
@@ -249,6 +251,96 @@
 #define PHOTOINTERRUPTER2_ACTIVE (0<<PIND3)
 
 
+/* Attiny-2313 macros/defines for communication */
+/* through Two-wires USI using TWI (AKA I2C) protocol */
+#define DDR_USI DDRB
+#define PORT_USI PORTB
+#define PIN_USI PINB
+/*#define PUSI_SDA PB5*/
+/*#define PUSI_SCL PB7 */
+#define PINUSI_SDA PINB5
+#define PINUSI_SCL PINB7
+#define PINUSI_SDA_MASK (0x01<<PINUSI_SDA)
+#define PINUSI_SCL_MASK (0x01<<PINUSI_SCL)
+#define PINUSI_MASK ((0x01<<PINUSI_SDA)|(0x01<<PINUSI_SCL))
+#define PORT_USI_SDA PB5
+#define PORT_USI_SCL PB7
+#define PORT_USI_SCL_MASK (0x01<<PORT_USI_SCL)
+#define PORT_USI_SDA_MASK (0x01<<PORT_USI_SDA)
+#define PORT_USI_MASK (PORT_USI_SDA_MASK|PORT_USI_SCL_MASK)
+/*#define PIN_USI_SDA PINB5*/
+/*#define PIN_USI_SCL PINB7*/
+#define USI_START_COND_INT USISIF
+/*#define USI_START_VECTOR USI_START_vect*/
+/*#define USI_OVERFLOW_VECTOR USI_OVERFLOW_vect*/
+typedef enum
+{
+	USI_SLAVE_CHECK_ADDRESS                = 0x00,
+	USI_SLAVE_SEND_DATA                    = 0x01,
+	USI_SLAVE_REQUEST_REPLY_FROM_SEND_DATA = 0x02,
+	USI_SLAVE_CHECK_REPLY_FROM_SEND_DATA   = 0x03,
+	USI_SLAVE_REQUEST_DATA                 = 0x04,
+	USI_SLAVE_GET_DATA_AND_SEND_ACK        = 0x05
+} overflow_state_t;
+
+
+#define SET_USI_TO_SEND_ACK( ) \
+{ \
+	/* prepare ACK */ \
+	USIDR = 0; \
+	/* set SDA as output */ \
+	DDR_USI |= ( 1 << PORT_USI_SDA ); \
+	/* clear all interrupt flags, except Start Cond */ \
+	USISR = \
+	( 0 << USISIF ) | \
+	( 1 << USIOIF ) | ( 1 << USIPF ) | \
+	( 1 << USIDC )| \
+	/* set USI counter to shift 1 bit */ \
+	( 0x0E << USICNT0 ); \
+}
+
+#define SET_USI_TO_READ_ACK()  \
+{  \
+	DDR_USI &=  ~(1<<PORT_USI_SDA);  /* Set SDA as intput */ \
+	USIDR    =  0;                   /* Prepare ACK       */ \
+	/* Clear all flags, except Start Cond  */ \
+	USISR    =  (0<<USISIF)|(1<<USIOIF)|(1<<USIPF)|(1<<USIDC)|\
+	(0x0E<<USICNT0);    /* set USI counter to shift 1 bit. */ \
+}
+
+#define SET_USI_TO_TWI_START_CONDITION_MODE()  \
+{ \
+	/* Enable Start Condition Interrupt. Disable Overflow Interrupt.*/  \
+	USICR    =  (1<<USISIE)|(0<<USIOIE)| \
+	/* Set USI in Two-wire mode. No USI Counter overflow hold.      */  \
+	(1<<USIWM1)|(0<<USIWM0)| \
+	/* Shift Register Clock Source = External, positive edge        */  \
+	(1<<USICS1)|(0<<USICS0)|(0<<USICLK)| \
+	(0<<USITC);                          \
+	/* Clear all flags, except Start Cond                            */ \
+	USISR    =  (0<<USISIF)|(1<<USIOIF)|(1<<USIPF)|(1<<USIDC)| \
+	(0x0<<USICNT0);  \
+}
+
+#define SET_USI_TO_SEND_DATA()  \
+{ \
+	DDR_USI |=  (1<<PORT_USI_SDA);   /* Set SDA as output */ \
+	/* Clear all flags, except Start Cond */ \
+	USISR    =  (0<<USISIF)|(1<<USIOIF)|(1<<USIPF)|(1<<USIDC)| \
+	/* set USI to shift out 8 bits        */ \
+	(0x0<<USICNT0); \
+}
+
+#define SET_USI_TO_READ_DATA()  \
+{  \
+	DDR_USI &= ~(1<<PORT_USI_SDA);  /* Set SDA as input */ \
+	/* Clear all flags, except Start Cond */ \
+	USISR    =  (0<<USISIF)|(1<<USIOIF)|(1<<USIPF)|(1<<USIDC)| \
+	/* set USI to shift out 8 bits        */ \
+	(0x0<<USICNT0); \
+}
+
+
 /* This is speed in msecs per timer ticks  */
 /* Initially set it 100 msecs */
 volatile uint16_t stepping_speed=100;
@@ -256,6 +348,306 @@ volatile uint16_t steps_remaining=0;
 volatile uint8_t mode=0x0;
 volatile uint8_t direction_to_initial_position=CLOCKWISE_DIRECTION;
 /*uint16_t timer_divider_value=390;*/
+
+
+/* Attiny-2313 variables for communication */
+/* through Two-wires USI using TWI (AKA I2C) protocol */
+uint8_t slave_addr;
+volatile overflow_state_t overflow_state;
+
+uint8_t rx_buf[TWI_RX_BUFFER_SIZE];
+volatile uint8_t rx_head;
+volatile uint8_t rx_tail;
+
+uint8_t tx_buf[TWI_TX_BUFFER_SIZE];
+volatile uint8_t tx_head;
+volatile uint8_t tx_tail;
+
+/* data requested callback  */
+void (*_onTwiDataRequest)(void);
+
+
+/* Attiny-2313 functions for communication */
+/* through Two-wires USI using TWI (AKA I2C) protocol */
+
+// flushes the TWI buffers
+
+/***************************/
+/* clear_twi_buffers(void) */
+/*************************************/
+/* This function clears twi buffers  */
+/*************************************/
+/* No arguments                      */
+/* Returns nothgin                   */
+/*************************************/
+void clear_twi_buffers(void)
+{
+  rx_tail=0;
+  rx_head=0;
+  tx_tail=0;
+  tx_head=0;
+} 
+
+/********************************************/
+/* usi_twi_slave_init(uint8_t twi_address)  */
+/********************************************/
+/* initialize USI for TWI/I2C slave mode    */
+/**********************************************************/
+/*  uint8_t twi_address - this is TWI/I2C slave address   */
+/*                        this unit address. Normally the */
+/*                        TWI/I2C slave address should be */
+/*                        acquired from EEPROM memory     */ 
+/* returns nothing                                        */
+/**********************************************************/
+void usi_twi_slave_init(uint8_t twi_address)
+{
+  clear_twi_buffers();
+
+  slave_addr=twi_address;
+
+/* In Two Wire mode (USIWM1, USIWM0 = 1X), the slave USI will pull SCL */
+/* low when a start condition is detected or a counter overflow (only */
+/* for USIWM1, USIWM0 = 11). This inserts a wait state. SCL is released */
+/* by the ISRs (USI_START_vect and USI_OVERFLOW_vect).  */
+
+/* Set SCL and SDA as output */
+  DDR_USI|=(1<<PORT_USI_SCL)|(1<<PORT_USI_SDA);
+
+/* set SCL high and set SDA high */
+  PORT_USI|=(0x01<<PORT_USI_SCL)|(1<<PORT_USI_SDA);
+
+/* Set SDA as input */
+  DDR_USI&=~(0x01<< PORT_USI_SDA);
+
+/* enable Start Condition Interrupt -  1 << USISIE */
+/* disable Overflow Interrupt - 0 << USIOIE */
+/* set USI in Two-wire mode, no USI Counter overflow hold - */
+/* 1 << USIWM1 and 0 << USIWM0 */
+/* Shift Register Clock Source = external, positive edge */
+/* 4-Bit Counter Source = external, both edges - */
+/* 1 << USICS1 and 0 << USICS0 and 0 << USICLK */
+/* no toggle clock-port pin - 0 << USITC */
+  USICR=(1<<USISIE) | (0<<USIOIE) | (1<<USIWM1)|(0<<USIWM0) |
+	    (1<<USICS1)|(0<<USICS0)|(0<<USICLK) | (0<<USITC);
+
+/*  clear all interrupt flags and reset overflow counter  */
+  USISR=(1<<USISIF)|(1<<USIOIF)|(1<<USIPF)|(1<<USIDC);
+/*  USISR=(1<<USI_START_COND_INT)|(1<<USIOIF)|(1<<USIPF)|(1<<USIDC);  */
+} // end usiTwiSlaveInit
+
+
+/***********************************/
+/* if_tx_buffer_is_not_empty(void) */
+/******************************************/ 
+/* Has no input parameters                */
+/* Returns true if tx buffer is not empty */
+/*         false if tx buffer is empty    */
+/*******************************************/
+bool if_tx_buffer_is_not_empty(void)
+{
+/* return 0 (false) if the tx buffer is empty  */
+  return tx_head != tx_tail;
+} 
+
+/*  put data in the transmission buffer, wait if buffer is full  */
+void usi_twi_transmit_byte(uint8_t data_byte)
+{
+  uint8_t tmphead;
+
+/* calculate buffer index  */
+  tmphead=(tx_head+1)&TWI_TX_BUFFER_MASK;
+
+/*  wait for free space in buffer  */
+  while(tmphead==tx_tail);
+
+/* store data in buffer */
+  tx_buf[tmphead]=data_byte;
+
+/* store new index */
+  tx_head = tmphead;
+} 
+
+/***********************************/
+/* if_rx_buffer_is_not_empty(void) */
+/******************************************/
+/* Has no input parameters                */
+/* Returns true if rx buffer is not empty */
+/*         false if rx buffer is empty    */
+/******************************************/
+bool if_rx_buffer_is_not_empty(void)
+{
+/* return 0 (false) if the rx buffer is empty  */
+  return rx_head != rx_tail;
+} 
+
+// return a byte from the receive buffer, wait if buffer is empty
+uint8_t usi_twi_receive_byte(void)
+{
+/* wait for Rx data */
+  while(rx_head==rx_tail);
+
+/* calculate buffer index */
+ rx_tail=(rx_tail+1)&TWI_RX_BUFFER_MASK;
+
+/* return data from the buffer. */
+  return rx_buf[rx_tail];
+}
+
+
+
+/***********************/
+/* ISR(USI_START_vect) */
+/**********************************************/
+/* This function handles interrupt requests   */
+/* upon start condition                       */
+/**********************************************/
+ISR(USI_START_vect)
+{
+/* set default starting conditions for new TWI package */
+  overflow_state=USI_SLAVE_CHECK_ADDRESS;
+
+/* set SDA as input */
+  DDR_USI&=~(0x01<<PORT_USI_SDA);
+
+/* wait for SCL to go low to ensure the Start Condition has completed */
+/* (the start detector will hold SCL low ) - if a Stop Condition arises */
+/* then leave the interrupt to prevent waiting forever - don't use USISR */
+/* to test for Stop Condition as in Application Note AVR312 because the */
+/* Stop Condition Flag is going to be set from the last TWI sequence */
+/* Wait while SCL his high and SDA is low */
+  while((PIN_USI&(0x01<<PINUSI_SCL))&&!((PIN_USI&(0x01<<PINUSI_SDA))))
+  {};
+
+/* a Stop Condition did not occur  */
+  if(!(PIN_USI&(0x01<<PINUSI_SDA)))
+  {
+/* keep Start Condition Interrupt enabled to detect RESTART */
+/* enable Overflow Interrupt */
+/* set USI in Two-wire mode, hold SCL low on USI Counter overflow */
+/* Shift Register Clock Source = External, positive edge */
+/* 4-Bit Counter Source = external, both edges */
+/* no toggle clock-port pin */
+    USICR=(0x01<<USISIE)|(0x01<<USIOIE)|
+          (0x01<<USIWM1)|(0x01<<USIWM0)|
+          (0x01<<USICS1)|(0x0<<USICS0)|(0x0<<USICLK)|
+          (0x0<<USITC);
+  }
+  else  /* if(!(PIN_USI&(0x01<<PINUSI_SDA))) */
+  {
+/* a Stop Condition did occur */
+/* enable Start Condition Interrupt */
+/* disable Overflow Interrupt */
+/* set USI in Two-wire mode, no USI Counter overflow hold */
+/* Shift Register Clock Source = external, positive edge */
+/* 4-Bit Counter Source = external, both edges */
+/* no toggle clock-port pin */
+    USICR=(0x01<<USISIE)|(0x0<<USIOIE)|
+          (0x01<<USIWM1)|(0x0<<USIWM0)|
+          (0x01<<USICS1)|(0x0<<USICS0)|(0x0<<USICLK)|
+          (0x0<<USITC);
+  } /* if(!(PIN_USI&(0x01<<PINUSI_SDA))) */
+
+/* clear interrupt flags - resetting the Start Condition Flag will */
+/* release SCL */
+/* set USI to sample 8 bits (count 16 external SCL pin toggles) */
+/*  USISR=(0x01<<USI_START_COND_INT)|(0x01<<USIOIF)|(0x01<<USIPF)|(0x01<<USIDC)| */
+  USISR=(0x01<<USISIF)|(0x01<<USIOIF)|(0x01<<USIPF)|(0x01<<USIDC)|
+        (0x0<<USICNT0);
+} 
+
+/**************************/
+/* ISR(USI_OVERFLOW_vect) */
+/***********************************************/
+/* This function handles interrupt requests    */
+/* upon overflow condition. It handles all the */
+/* communication.                              */
+/* Only disabled when waiting for a new Start  */
+/* condition                                   */
+/***********************************************/
+ISR(USI_OVERFLOW_vect)
+{
+  switch(overflow_state)
+  {
+/* Address mode: check address and send ACK (and next USI_SLAVE_SEND_DATA) if OK, */
+/* else reset USI */
+    case USI_SLAVE_CHECK_ADDRESS:
+    if((USIDR==0x0)||((USIDR>>1)==slave_addr))
+    {
+/* callback */
+      if(_onTwiDataRequest) 
+        _onTwiDataRequest();
+      if(USIDR&0x01)
+      {  overflow_state=USI_SLAVE_SEND_DATA;  }
+      else  {  overflow_state=USI_SLAVE_REQUEST_DATA;  } 
+      SET_USI_TO_SEND_ACK();
+    }
+    else  {  SET_USI_TO_TWI_START_CONDITION_MODE();  }
+    break;
+
+/* Master write data mode: check reply and goto USI_SLAVE_SEND_DATA if OK, */
+/* else reset USI */
+    case USI_SLAVE_CHECK_REPLY_FROM_SEND_DATA:
+      if(USIDR!=0x0)
+      {
+/* if NACK, the master does not want more data */
+        SET_USI_TO_TWI_START_CONDITION_MODE();
+        return;
+      }
+/* from here we just drop straight into USI_SLAVE_SEND_DATA if the */
+/* master sent an ACK  */
+
+/* copy data from buffer to USIDR and set USI to shift byte */
+/* next USI_SLAVE_REQUEST_REPLY_FROM_SEND_DATA  */
+    case USI_SLAVE_SEND_DATA:
+/* Get data from Buffer */
+      if(tx_head!=tx_tail)
+      {
+        tx_tail=(tx_tail+1)&TWI_TX_BUFFER_MASK;
+        USIDR=tx_buf[tx_tail];
+      }
+      else
+      {
+/* the buffer is empty */
+        SET_USI_TO_TWI_START_CONDITION_MODE( );
+        return;
+      } 
+      overflow_state=USI_SLAVE_REQUEST_REPLY_FROM_SEND_DATA;
+      SET_USI_TO_SEND_DATA( );
+      break;
+
+/* set USI to sample reply from master  */
+/* next USI_SLAVE_CHECK_REPLY_FROM_SEND_DATA  */
+    case USI_SLAVE_REQUEST_REPLY_FROM_SEND_DATA:
+      overflow_state=USI_SLAVE_CHECK_REPLY_FROM_SEND_DATA;
+      SET_USI_TO_READ_ACK( );
+      break;
+
+/* Master read data mode: set USI to sample data from master  */
+/* next USI_SLAVE_GET_DATA_AND_SEND_ACK  */
+    case USI_SLAVE_REQUEST_DATA:
+      overflow_state=USI_SLAVE_GET_DATA_AND_SEND_ACK;
+      SET_USI_TO_READ_DATA( );
+      break;
+
+/* copy data from USIDR and send ACK */
+/* next USI_SLAVE_REQUEST_DATA */
+    case USI_SLAVE_GET_DATA_AND_SEND_ACK:
+/* put data into buffer */
+/* Not necessary, but prevents warnings */
+      rx_head=(rx_head+1)&TWI_RX_BUFFER_MASK;
+      rx_buf[rx_head]=USIDR;
+/* next USI_SLAVE_REQUEST_DATA */
+      overflow_state=USI_SLAVE_REQUEST_DATA;
+      SET_USI_TO_SEND_ACK( );
+      break;
+  }  /* switch(overflow_state)  */
+} 
+
+
+
+
+
+
 
 /*****************************************************************************/
 /* set_direction_to_initial_position(uint8_t direction_to_initial_position_) */
@@ -443,7 +835,6 @@ void write_eeprom_byte(uint8_t address_, uint8_t value)
 ISR(TIMER1_COMPA_vect)
 {
 #if 1
-  uint8_t portb_value=PORTB;
   uint8_t pind_=PIND;
 
   if((pind_&PHOTOINTERRUPTER1_MASK)==PHOTOINTERRUPTER1_ACTIVE)
@@ -560,191 +951,199 @@ ISR(TIMER1_COMPA_vect)
 /* parameters, so there is no need to change any variables. */
   }
 
+/* If number of remaining steps is not 0 - */
+/* perform the step according to the algorithm */
+/* Number of remaining steps could become 0 if  */
+/* current state could not be recognized */
   if(steps_remaining>0)
   {
-#ifdef CLOCKWISE_DIRECTION_HALF_STEPS
-    if(((mode&DIRECTION_MASK)>0)&&
-	   ((mode&HALF_STEPS_MODE_MASK)>0))
+/* While Two-wired USI occupies two pins on PORTB: */
+/* PINB7 (SCL) and PINB5 (SDA) */
+/* those pins should be reassigned on PORTD */
+/* PIND1 and PIND0 where selected for substitute */
+/* PINB7 (SCL) and PINB5 (SDA) respectively */
+/* (d1)b(d0)bb bbbb - PORTB and ddd dd(b7)(b5) - PORTD  */
+    uint8_t portb_value=PORTB;
+    uint8_t portd_value=PORTD;
+    uint8_t port_value=(portb_value&(~PORT_USI_MASK))+
+                       ((portd_value&0x02)<<(PORT_USI_SCL-1))+
+                       ((portd_value&0x01)<<PORT_USI_SDA);
+    uint8_t port_var=0xFF;
+    uint8_t port_value_array[8] =
     {
-/* mode is half steps and clockwise direction */
-      switch(portb_value)
+        COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION,
+        COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY,
+        COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION,
+        COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY,
+        COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION,
+        COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY,
+        COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION,
+        COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY
+    };
+
+    if(port_value==EVERYTHING_IS_INACTIVE)
+    {  port_var=0;  }
+    else
+	{
+      for(int8_t t=0; t<8; t++)
       {
-        case EVERYTHING_IS_INACTIVE:
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY;
+        if(port_value==port_value_array[t])
+        {
+          port_var=t;
           break;
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
-          portb_value=COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY;
-          break;
-        case COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
-          portb_value=COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY;
-          break;
-        case COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
-          break;
-        default:
-/* This is "impossible state" for coils.  */
-/* Reset PORTB and do not do any more steps. */
-          portb_value=EVERYTHING_IS_INACTIVE;
-		  steps_remaining=0;
-          break;
-	  }
-	}
-#endif   /*  #ifdef CLOCKWISE_DIRECTION_HALF_STEPS  */
-  
-#ifdef COUNTERCLOCKWISE_DIRECTION_HALF_STEPS
-    if(((mode&DIRECTION_MASK)==0)&&
-       ((mode&HALF_STEPS_MODE_MASK)>0))
-    {
-/* mode is half steps and counterclockwise direction */
-      switch(portb_value)
-      {
-        case EVERYTHING_IS_INACTIVE:
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
-          portb_value=COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY;
-          break;
-        case COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
-          portb_value=COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY;
-          break;
-        case COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY;
-          break;
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
-          break;
-        default:
-/* This is "impossible state" for coils.  */
-/* Reset PORTB and do not do any more steps. */
-          portb_value=EVERYTHING_IS_INACTIVE;
-          steps_remaining=0;
-          break;
+        }
       }
     }
-#endif  /* #ifdef COUNTERCLOCKWISE_DIRECTION_HALF_STEPS  */
 
-#ifdef CLOCKWISE_DIRECTION_FULL_STEPS
-    if(((mode&DIRECTION_MASK)>0)&&
-       ((mode&HALF_STEPS_MODE_MASK)==0))
+	if(port_var>=8)
     {
-/* mode is full steps and clockwise direction */
-      switch(portb_value) 
-      {
-        case EVERYTHING_IS_INACTIVE:
-        case COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY;
-          break;
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY:
-          portb_value=COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY;
-          break;
-        case COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY:
-          portb_value=COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY;
-          break;
-
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
-          break;
-
-        default:
 /* This is "impossible state" for coils.  */
-/* Reset PORTB and do not do any more steps. */
-          portb_value=EVERYTHING_IS_INACTIVE;
-          steps_remaining=0;
-          break;
-      }
+/* Reset port_value and do not do any more steps. */
+      port_var=0xFF;
+      port_value=EVERYTHING_IS_INACTIVE;
+      steps_remaining=0;
     }
-#endif  /* #ifdef CLOCKWISE_DIRECTION_FULL_STEPS  */
 
-#ifdef COUNTERCLOCKWISE_DIRECTION_FULL_STEPS
-    if(((mode&DIRECTION_MASK)==0)&&
-       ((mode&HALF_STEPS_MODE_MASK)==0))
+#if 0
+    switch(port_value)
     {
-/* mode is full steps and counterclockwise direction */
-      switch(portb_value) 
-      {
-        case EVERYTHING_IS_INACTIVE:
-        case COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY:
-          portb_value=COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY;
-          break;
-        case COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY;
-          break;
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY:
-          portb_value=COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY;
-          break;
-
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
-          break;
-        case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
-          portb_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
-          break;
-
-        default:
+      case EVERYTHING_IS_INACTIVE:
+      case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
+        port_var=0;
+        break;
+      case COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY:
+        port_var=1;
+        break;
+      case COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
+        port_var=2;
+        break;
+      case COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY:
+        port_var=3;
+        break;
+      case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION:
+        port_var=4;
+        break;
+      case COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY:
+        port_var=5;
+        break;
+      case COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION:
+        port_var=6;
+        break;
+      case COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY:
+        port_var=7;
+        break;
+      default:
 /* This is "impossible state" for coils.  */
-/* Reset PORTB and do not do any more steps. */
-          portb_value=EVERYTHING_IS_INACTIVE;
-          steps_remaining=0;
-          break;
-      }
+/* Reset port_value and do not do any more steps. */
+        port_var=0xFF;
+        port_value=EVERYTHING_IS_INACTIVE;
+        steps_remaining=0;
+        break;
+    }  /* switch(port_value)  */
+#endif /* #if 0 */
+
+/* Again: if number of remaining steps is not 0 - */
+/* perform the step according to the algorithm */
+/* Number of remaining steps could become 0 if  */
+/* current state could not be recognized (see above) */
+	if(steps_remaining>0)
+	{
+/* By default, the movement is assumed to be clockwise in half-step mode. */
+      int8_t step_=1;
+
+/* Assume CLOCKWISE_DIRECTION is "positive" direction: */
+/* Moving clockwise will increment the value of the port_var variable. */
+/* COUNTERCLOCKWISE_DIRECTION is "negative" direction */
+/* Moving counterclockwise will decrement the value of the */
+/* port_var variable. */
+      if(((mode&DIRECTION_MASK)>>DIRECTION_BIT)==COUNTERCLOCKWISE_DIRECTION)
+        step_*=-1;
+
+/* Half-step mode movement passes each half-step position. */
+/* Full-step mode movement skips exactly one half-step position. */
+      if(((mode&HALF_STEPS_MODE_MASK)>>FULL_HALF_STEPS_MODE_BIT)==FULL_STEPS_MODE)
+        step_*=2;
+
+      port_var=(uint8_t)(port_var+step_);
+/* port_var variable can have only 8 possible values */
+/* (from 0 to 7 inclusive), representing 8 half-step positions. */
+      port_var=(port_var&0x07);
+	}  /* if(steps_remaining>0) */
+
+# if 1
+    if(port_var<8)
+    {  port_value=port_value_array[port_var];  }
+    else
+    {
+/* This is "impossible state" for coils.  */
+/* Reset port_value and do not do any more steps. */
+      port_value=EVERYTHING_IS_INACTIVE;
+      steps_remaining=0;
     }
-#endif /* #ifdef COUNTERCLOCKWISE_DIRECTION_FULL_STEPS  */
+#endif /* #if 0 */
+
+#if 0
+    switch(port_var)
+    {
+      case 0:
+        port_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
+        break;
+      case 1:
+        port_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_ONLY;
+        break;
+      case 2:
+        port_value=COIL_1_ACTIVE_POSITIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
+        break;
+      case 3:
+        port_value=COIL_2_ACTIVE_POSITIVE_DIRECTION_ONLY;
+        break;
+      case 4:
+        port_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_POSITIVE_DIRECTION;
+        break;
+      case 5:
+        port_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_ONLY;
+        break;
+      case 6:
+        port_value=COIL_1_ACTIVE_NEGATIVE_DIRECTION_COIL_2_ACTIVE_NEGATIVE_DIRECTION;
+        break;
+      case 7:
+        port_value=COIL_2_ACTIVE_NEGATIVE_DIRECTION_ONLY;
+        break;
+      default:
+/* This is "impossible state" for coils.  */
+/* Reset port_value and do not do any more steps. */
+        port_value=EVERYTHING_IS_INACTIVE;
+        steps_remaining=0;
+        break;
+    }  /* switch(port_var) */
+#endif /* #if 0 */
+
+/* While Two-wired USI occupies two pins on PORTB: */
+/* PINB7 (SCL) and PINB5 (SDA) */
+/* those pins should be reassigned on PORTD */
+/* PIND1 and PIND0 where selected for substitute */
+/*  PINB7 (SCL) and PINB5 (SDA) respectively */
+/*  (d1)b(d0)bb bbbb - PORTB and ddd dd(b7)(b5) - PORTD  */
+    portb_value=(portb_value&PORT_USI_MASK)+(port_value&(~(PORT_USI_MASK)));
+	portd_value=((port_value&PORT_USI_SCL_MASK)>>(PORT_USI_SCL-1))+
+                ((port_value&PORT_USI_SDA_MASK)>>PORT_USI_SDA); 
     PORTB=portb_value;
+	PORTD=portd_value;
     if((steps_remaining>0)&&
        ((pind_&PHOTOINTERRUPTER1_MASK)!=PHOTOINTERRUPTER1_ACTIVE)&&
        ((pind_&PHOTOINTERRUPTER2_MASK)!=PHOTOINTERRUPTER2_ACTIVE))
       steps_remaining--;
-  }
-  else
+  }  /* if(steps_remaining>0) */
+
+/* if number of remaining steps became 0 */
+/* clear all timer interrupts - no timer */
+/* interrupts needed */
+  if(steps_remaining<=0)
   {
     TIMSK=0x00; /* Interrupts mask */
                 /* Clear all bits - no timer interrupts */
                 /* needed.  */
-  }
+  }  /* if(steps_remaining>0) */
 
 #endif  /* #if 0 */
 }
@@ -922,11 +1321,30 @@ int main(void)
   PORTA=0x00; /* Port A Initialization. */
   DDRA=0x00;  /* All three bits of the Port A are inputs. */
 
+/* Attiny2313 has a USI interface, where there is a */
+/* Two-wire communication mode. In this mode it is */
+/* possible to implement the TWI protocol (AKA I2C). */
+/* For Two-wire communication mode, two bits/pins are */
+/* reserved in the Port B: */
+/* PB7 - this is SCL: Two-wire mode Serial Clock for USI Two-wire */
+/* mode. */
+/* PB5 - this is SDA: Two-wire mode Serial Interface Data. */
+/* Therefore, for h-bridge to work, you need to allocate two wires */
+/* in another port. Let these be bits/pins PD0 and PD1 in Port D. */
+/* Alternative functions for these bits/pins - RxD and TxD work when */
+/* updating the firmware. */
   PORTB = 0xFF;  /* Port B Initialization  */
-  DDRB = 0xFF;
+  DDRB = 0x5F;  /* Bit 5 and bit 7 of the port B are inputs */
+                /* All other bits of the port B are outputs */
 
+/* There are two bit/pins in PORTB reserved for Two-wire mode */
+/* communication: */
+/* PB7 - this is SCL: Two-wire mode Serial Clock for USI Two-wire */
+/* mode. */
+/* PB5 - this is SDA: Two-wire mode Serial Interface Data. */
   PORTD=0x7F; /* Port D Initialization */
-  DDRD=0x00;  /* All seven bits of the Port D are inputs. */
+  DDRD=0x03;  /* Bit 0 and bit 1 of the Port D are outputs */
+              /* All other bits of the Port D are inputs. */
 
   TCCR0A = 0x00;   /* Timer 0 initialization */
   TCCR0B = 0x00;
@@ -950,6 +1368,15 @@ int main(void)
 /*  OCR1A=1954;  *//*  About 200 msecs  */
   OCR1A=0x00;
   OCR1B=0x00;
+
+/*!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!*/
+/* For now slave address should be something simple */ 
+/* Assume 0x01 was selected as a slave address */
+/* Later more sophisticated algorithm will be implemented */
+/* probably reading this from the EEPROM */
+  uint8_t sl_addr=0x01;
+  usi_twi_slave_init(sl_addr);
+
   TCNT1H=0x00;  /* Reset Timer 1 counter  */
   TCNT1L=0x00;
 
