@@ -22,7 +22,7 @@ OBJECTS = $(patsubst %,$(OBJ_DIR)/%,$(OBJECT_NAMES))
 
 # Flags
 MCU = attiny2313
-WFLAGS = -Wall -Wextra -Werror -Wshadow
+WFLAGS = -Wall -Wextra -Werror -Wshadow -Wno-implicit-fallthrough
 #ASMFLAGS = -Wa,-ahlmns=$(TARGET).lst
 ASMFLAGS = -Wa,-ahlmns=$(patsubst %.o,%.lst,$(OBJECTS))
 OPTIMIZATIONFLAGS = -Os
